@@ -1,0 +1,4 @@
+# Android启动
+- 要搞清楚Android系统，从Android的启动来分析，是一个不错的角度，也是我之前学习Linux系统的一个心得；
+- 众所周知，Android是基于Linux内核开发的操作系统，而我之前一直从事的是嵌入式系统的Linux内核开发，所以对于我来说，从bootloader初始化，引导Linux内核执行最终跳转到init这个用户态第一个进程，这个流程是熟悉的不能再熟悉，不同的是Android上的init进程与之前的嵌入式系统上busybox的init有变化，所以就从init这个阶段开始研究；
+- init进程引导，最终Android设备进入到稳态能够让用户操作设备，这就是这一篇启动文章要研究的范围；
