@@ -49,6 +49,7 @@ int main(int argc, char** argv) {
 
 ### 第一阶段
 FirstStageMain函数定义在system/core/init目录下的first_stage_init.cpp文件中，函数功能较复杂，下面分段进行解读：
+#### 复位信号处理
 ```
 int FirstStageMain(int argc, char** argv) {
     if (REBOOT_BOOTLOADER_ON_PANIC) {
@@ -136,5 +137,19 @@ void __attribute__((noreturn)) InitFatalReboot(int signal_number) {
 - init进程首先记录导致reboot的信号；
 - 尝试使用unwinder进行推栈；
 - 如果打开了init_fatal_panic配置开关，直接通过对/proc/sysrq-trigger文件写c造内核crash从而重启系统；
-- 各种措施执行之后如果还没有复位，init再尝试调用RebootSystem进行复位；
+- 各种措施执行之后如果还没有复位，init再尝试调用RebootSystem进行复位，至于RebootSystem实现，从入参格式来看，如果熟悉linux c语言的话，基本就是调用reboot系统调用了；
+
 至此，给init进程安装复位信号处理函数的操作就分析清楚；
+#### 启动时间戳
+代码很简单，就只有下面这一句，感觉是获取当前时间戳的一个方法，至于boot_clock的实现方法，暂时先忽略；
+```
+boot_clock::time_point start_time = boot_clock::now();
+```
+#### error日志机制
+```
+    std::vector<std::pair<std::string, int>> errors;
+#define CHECKCALL(x) \
+    if ((x) != 0) errors.emplace_back(#x " failed", errno);
+```
+- 首先定义了一个errors的vector变量，用于记录error错误；
+- CHECKCALL宏应该是一个老司机的手法，融合了多个c语言的宏技巧；
