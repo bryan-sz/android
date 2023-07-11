@@ -236,3 +236,192 @@ boot_clock::time_point start_time = boot_clock::now();
 - AID_READPROC定义在system/core/libcutils/include/private/android_filesystem_config.h文件中；
 `#define AID_READPROC 3009     /* Allow /proc read access */`
 - CHECKALL宏定义使用场景结束，将宏undef掉；
+#### 日志初始化
+```
+    SetStdioToDevNull(argv);
+    // Now that tmpfs is mounted on /dev and we have /dev/kmsg, we can actually
+    // talk to the outside world...
+    InitKernelLogging(argv);
+
+    if (!errors.empty()) {
+        for (const auto& [error_string, error_errno] : errors) {
+            LOG(ERROR) << error_string << " " << strerror(error_errno);
+        }
+        LOG(FATAL) << "Init encountered errors starting first stage, aborting";
+    }
+
+    LOG(INFO) << "init first stage started!";
+```
+- 首先SetStdioToDevNull将stdin、stdout、stderr重定向到/dev/null；
+- InitKernelLogging初始化日志；
+- 检测上一步initramfs装载过程中的错误信息，如果有错误信息调用LOG(FATAL)直接abort退出进程；这一要注意，FATAL级别会导致LOG调用abort；
+- 反之，则记录启动成功日志；
+#### 检测initramfs
+通过访问“/”根目录，确认initramfs是否挂载成功；
+```
+   auto old_root_dir = std::unique_ptr<DIR, decltype(&closedir)>{opendir("/"), closedir};
+    if (!old_root_dir) {
+        PLOG(ERROR) << "Could not opendir(\"/\"), not freeing ramdisk";
+    }
+
+    struct stat old_root_info;
+    if (stat("/", &old_root_info) != 0) {
+        PLOG(ERROR) << "Could not stat(\"/\"), not freeing ramdisk";
+        old_root_dir.reset();
+    }
+```
+- 感觉是一个lamda表达式，去打开和关闭“/”根目录，并将结果保存到old_root_dir；
+- 通过stat访问“/”目录；这个感觉和上一步opendir&closedir有重复；
+#### 加载内核模块
+```
+    auto want_console = ALLOW_FIRST_STAGE_CONSOLE ? FirstStageConsole(cmdline, bootconfig) : 0;
+    auto want_parallel =
+            bootconfig.find("androidboot.load_modules_parallel = \"true\"") != std::string::npos;
+
+    boot_clock::time_point module_start_time = boot_clock::now();
+    int module_count = 0;
+    BootMode boot_mode = GetBootMode(cmdline, bootconfig);
+    if (!LoadKernelModules(boot_mode, want_console,
+                           want_parallel, module_count)) {
+        if (want_console != FirstStageConsoleParam::DISABLED) {
+            LOG(ERROR) << "Failed to load kernel modules, starting console";
+        } else {
+            LOG(FATAL) << "Failed to load kernel modules";
+        }
+    }
+    if (module_count > 0) {
+        auto module_elapse_time = std::chrono::duration_cast<std::chrono::milliseconds>(
+                boot_clock::now() - module_start_time);
+        setenv(kEnvInitModuleDurationMs, std::to_string(module_elapse_time.count()).c_str(), 1);
+        LOG(INFO) << "Loaded " << module_count << " kernel modules took "
+                  << module_elapse_time.count() << " ms";
+    }
+
+    bool created_devices = false;
+    if (want_console == FirstStageConsoleParam::CONSOLE_ON_FAILURE) {
+        if (!IsRecoveryMode()) {
+            created_devices = DoCreateDevices();
+            if (!created_devices) {
+                LOG(ERROR) << "Failed to create device nodes early";
+            }
+        }
+        StartConsole(cmdline);
+    }
+```
+- 首先根据配置，获取console/是否并行加载内核模块配置；
+- 调用system/core/libmodprobe/libmodprobe.cpp文件定义的Modprobe类中的方法，最终采用insmod或者modprobe加载内核模块；
+- 统计加载内核模块的数量和时间；
+- 判断是否recovery模式，如果非recovery模式，还要创建逻辑分区；
+#### prop文件准备
+```
+    if (access(kBootImageRamdiskProp, F_OK) == 0) {
+        std::string dest = GetRamdiskPropForSecondStage();
+        std::string dir = android::base::Dirname(dest);
+        std::error_code ec;
+        if (!fs::create_directories(dir, ec) && !!ec) {
+            LOG(FATAL) << "Can't mkdir " << dir << ": " << ec.message();
+        }
+        if (!fs::copy_file(kBootImageRamdiskProp, dest, ec)) {
+            LOG(FATAL) << "Can't copy " << kBootImageRamdiskProp << " to " << dest << ": "
+                       << ec.message();
+        }
+        LOG(INFO) << "Copied ramdisk prop to " << dest;
+    }
+```
+- kBootImageRamdiskProp变量在system/core/init/second_stage_resources.h文件中定义；
+```
+constexpr const char kSecondStageRes[] = "/second_stage_resources";
+constexpr const char kBootImageRamdiskProp[] = "/system/etc/ramdisk/build.prop";
+
+inline std::string GetRamdiskPropForSecondStage() {
+    return std::string(kSecondStageRes) + kBootImageRamdiskProp;
+}
+```
+- 创建/second_stage_resources//system/etc/ramdisk/路径；
+- 将/system/etc/ramdisk/build.prop文件copy到新创建的/second_stage_resources//system/etc/ramdisk/路径下；
+- build.prop该文件包含构建的时间戳信息，移动到/second_stage_resources以便第二阶段init可以读取启动的构建时间戳；
+#### debug模式
+```
+    // If "/force_debuggable" is present, the second-stage init will use a userdebug
+    // sepolicy and load adb_debug.prop to allow adb root, if the device is unlocked.
+    if (access("/force_debuggable", F_OK) == 0) {
+        constexpr const char adb_debug_prop_src[] = "/adb_debug.prop";
+        constexpr const char userdebug_plat_sepolicy_cil_src[] = "/userdebug_plat_sepolicy.cil";
+        std::error_code ec;  // to invoke the overloaded copy_file() that won't throw.
+        if (access(adb_debug_prop_src, F_OK) == 0 &&
+            !fs::copy_file(adb_debug_prop_src, kDebugRamdiskProp, ec)) {
+            LOG(WARNING) << "Can't copy " << adb_debug_prop_src << " to " << kDebugRamdiskProp
+                         << ": " << ec.message();
+        }
+        if (access(userdebug_plat_sepolicy_cil_src, F_OK) == 0 &&
+            !fs::copy_file(userdebug_plat_sepolicy_cil_src, kDebugRamdiskSEPolicy, ec)) {
+            LOG(WARNING) << "Can't copy " << userdebug_plat_sepolicy_cil_src << " to "
+                         << kDebugRamdiskSEPolicy << ": " << ec.message();
+        }
+        // setenv for second-stage init to read above kDebugRamdisk* files.
+        setenv("INIT_FORCE_DEBUGGABLE", "true", 1);
+    }
+```
+- 首先检测是否存在文件/force_debuggable；
+- 如果存在/force_debuggable，再检测是否存在/adb_debug.prop和/userdebug_plat_sepolicy.cil文件，并将其copy到/debug_ramdisk目录下；
+- 设置环境变量INIT_FORCE_DEBUGGABLE为true；
+#### chroot
+```
+    if (ForceNormalBoot(cmdline, bootconfig)) {
+        mkdir("/first_stage_ramdisk", 0755);
+        PrepareSwitchRoot();
+        // SwitchRoot() must be called with a mount point as the target, so we bind mount the
+        // target directory to itself here.
+        if (mount("/first_stage_ramdisk", "/first_stage_ramdisk", nullptr, MS_BIND, nullptr) != 0) {
+            PLOG(FATAL) << "Could not bind mount /first_stage_ramdisk to itself";
+        }
+        SwitchRoot("/first_stage_ramdisk");
+    }
+    if (!DoFirstStageMount(!created_devices)) {
+        LOG(FATAL) << "Failed to mount required partitions early ...";
+    }
+
+    struct stat new_root_info;
+    if (stat("/", &new_root_info) != 0) {
+        PLOG(ERROR) << "Could not stat(\"/\"), not freeing ramdisk";
+        old_root_dir.reset();
+    }
+
+    if (old_root_dir && old_root_info.st_dev != new_root_info.st_dev) {
+        FreeRamdisk(old_root_dir.get(), old_root_info.st_dev);
+    }
+```
+- 在根目录下创建/first_stage_ramdisk目录；
+- PrepareSwitchRoot做切根前的准备，主要是创建/first_stage_ramdisk/system/bin/snapuserd目录，并且将/system/bin/snapuserd或/system/bin/snapuserd_ramdisk链接过去；
+- mount/first_stage_ramdisk目录，注意要切根，所以用的是bind选项的mount；
+- SwitchRoot切根到/first_stage_ramdisk，最终调用的是chroot完成切根动作；
+- 因为切了根，所以需要DoFirstStageMount再次完成相关设备和目录的mount；
+- 调用FreeRamdisk反复释放initramfs；
+#### avb校验
+```
+    SetInitAvbVersionInRecovery();
+
+    setenv(kEnvFirstStageStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(),
+           1);
+```
+- 第一行代码就是检查avb，并设置INIT_AVB_VERSION环境变量，关于avb，后续详细再了解；
+- 第二行代码也是设置启动时间的环境变量；
+#### 跳转到第二阶段init
+```
+const char* path = "/system/bin/init";
+    const char* args[] = {path, "selinux_setup", nullptr};
+    auto fd = open("/dev/kmsg", O_WRONLY | O_CLOEXEC);
+    dup2(fd, STDOUT_FILENO);
+    dup2(fd, STDERR_FILENO);
+    close(fd);
+    execv(path, const_cast<char**>(args));
+
+    // execv() only returns if an error happened, in which case we
+    // panic and never fall through this conditional.
+    PLOG(FATAL) << "execv(\"" << path << "\") failed";
+
+    return 1;
+```
+- 调用execve函数fork一个子进程，子进程执行/system/bin/init二进制，也就是第二阶段的init；
+- 传递给init的参数包含selinux_setup，也就是可以猜测，android是默认强制启动了selinux的；
+至此，第一阶段init初始化完成，后续分析第二阶段的init；
