@@ -152,4 +152,19 @@ boot_clock::time_point start_time = boot_clock::now();
     if ((x) != 0) errors.emplace_back(#x " failed", errno);
 ```
 - 首先定义了一个errors的vector变量，用于记录error错误；
-- CHECKCALL宏应该是一个老司机的手法，融合了多个c语言的宏技巧；
+- CHECKCALL宏应该是一个老司机的手法，融合了多个c语言的宏技巧；首先是根据x表达式的执行结果来判断是否记录错误信息，其次#连接执行异常的表达式，最后记录errno；
+- 另外提一句，根据提交记录，这个老司机也一样掉了宏定义中经常掉的坑，可以详细参考：[修复clang-tidy告警](https://android-review.googlesource.com/c/platform/system/core/+/1012395/4/init/first_stage_init.cpp#155)
+### 执行环境准备
+```
+// Clear the umask.
+    umask(0);
+    CHECKCALL(clearenv());
+    CHECKCALL(setenv("PATH", _PATH_DEFPATH, 1));
+```
+- 首先将umask清空；
+- 再将环境变量清空；
+- 设置PATH环境变量，其中_PATH_DEFPATH定义在bionic/libc/include/path.h头文件中，定义如下：
+```
+/** Default shell search path. */
+#define _PATH_DEFPATH "/product/bin:/apex/com.android.runtime/bin:/apex/com.android.art/bin:/system_ext/bin:/system/bin:/system/xbin:/odm/bin:/vendor/bin:/vendor/xbin"
+```
