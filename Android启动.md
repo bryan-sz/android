@@ -666,10 +666,12 @@ void SelinuxSetupKernelLogging() {
 - 参考main.cpp文件中，有init进程的main函数入口中，根据传入的参数进入不同的启动阶段，在SetupSelinux阶段传递的是second_stage参数，所以会调用SecondStageMain函数，进入init第二阶段；
 - SecondStageMain函数定义在system/core/init/init.cpp文件中，下面就结合代码分析一下init第二阶段流程；
 - 首先与前两个阶段一样，都是安装复位信号处理函数、重定向stdio、日志初始化、设置PATH环境变量等；
+#### 设置复位函数
 ```
 trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdown(command); };
 ```
 - 多了一个trigger_shutdown函数指针的赋值，这是一个lambda表达式，意思就是trigger_shutdown接受一个const std::string& command参数，并将command传递调用shutdown_state.TriggerShutdown（command）函数；
+#### SIGPIPE处理
 ```
 // Init should not crash because of a dependence on any other process, therefore we ignore
     // SIGPIPE and handle EPIPE at the call site directly.  Note that setting a signal to SIG_IGN
@@ -682,6 +684,7 @@ trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdo
     }
 ```
 - 单独给SIGPIPE信号安装了处理函数，而这个处理函数就是啥都不干，应该可以简化为signal(SIGPIPE, SIG_IGN)一行代码；
+#### oom killer设置
 ```
     // Set init and its forked children's oom_adj.
     if (auto result =
@@ -692,6 +695,7 @@ trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdo
     }
 ```
 - 设置init进程的oom_score_adj为-1000，这已经是oom_score_adj的最小值了，那么init进程就永远不会被oom killer误杀了；
+#### 会话秘钥
 ```
 // Set up a session keyring that all processes will have access to. It
     // will hold things like FBE encryption keys. No process should override
@@ -699,11 +703,13 @@ trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdo
     keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1);
 ```
 - 关于秘钥，我也不懂，只知道这是一个session key；
+#### 创建启动标志
 ```
     // Indicate that booting is in progress to background fw loaders, etc.
     close(open("/dev/.booting", O_WRONLY | O_CREAT | O_CLOEXEC, 0000));
 ```
 - 作用是创建/dev/.booting文件，类似于一个标记，其他的background fw loaders看到有这个文件，就知道正在启动过程中；
+#### adb root
 ```
     // See if need to load debug props to allow adb root, when the device is unlocked.
     const char* force_debuggable_env = getenv("INIT_FORCE_DEBUGGABLE");
@@ -724,4 +730,37 @@ trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdo
 - 判断设备是否已经解锁，定义在system/core/fs_mgr/libfs_avb/fs_avb.cpp文件中，具体是否unlocked，分别尝试从dtb、properties以及cmdline中获取；
 - 只有设备处于unlocked状态，并且INIT_FORCE_DEBUGGABLE环境变量为true，才会允许设备adb root；
 - 如果不允许adb root，将/debug_ramdisk节点umount掉；
-- 
+#### property初始化
+```
+void PropertyInit() {
+    selinux_callback cb;
+    cb.func_audit = PropertyAuditCallback;
+    selinux_set_callback(SELINUX_CB_AUDIT, cb);
+
+    mkdir("/dev/__properties__", S_IRWXU | S_IXGRP | S_IXOTH);
+    CreateSerializedPropertyInfo();
+    if (__system_property_area_init()) {
+        LOG(FATAL) << "Failed to initialize property area";
+    }
+    if (!property_info_area.LoadDefaultPath()) {
+        LOG(FATAL) << "Failed to load serialized property info file";
+    }
+
+    // If arguments are passed both on the command line and in DT,
+    // properties set in DT always have priority over the command-line ones.
+    ProcessKernelDt();
+    ProcessKernelCmdline();
+    ProcessBootconfig();
+
+    // Propagate the kernel variables to internal variables
+    // used by init as well as the current required properties.
+    ExportKernelBootProps();
+
+    PropertyLoadBootDefaults();
+}
+```
+- 调用PropertyInit()进行初始化，定义在system/core/init/property_service.cpp文件中；
+- 首先安装selinux的回调处理函数；
+- 创建/dev/__properties__目录；
+- CreateSerializedPropertyInfo()函数尝试从selinux的哥哥配置文件中读取selinux的配置，并写入到/dev/__properties__/property_info文件，最终restorecon生效；
+- __system_property_area_init()就是创建一片共享内存，映射/dev/__properties__/property_info文件；
