@@ -492,5 +492,8 @@ void MountMissingSystemPartitions() {
 ```
 - 两个Fstab类对象，fstab读取默认fstab的配置，而mounts对象从/proc/mounts文件读取系统已经mount的文件系统；
 - fstab对象读取的默认fstab配置，可以参考ReadDefaultFstab，定义在system/core/fs_mgr/fs_mgr_fstab.cpp文件中，大约是读取了如下文件：
--- 从dt设备树读取；
---  
+1. 从dt设备树读取；
+2. 从/etc/recovery.fstab文件获取；
+3. 多个位置，格式为${fstab}<fstab_suffix>,${fstab}<hardware>,以及${fstab}<hardware.platform>；
+4. 上述的${fstab}可能包含值："/odm/etc/fstab."，"/vendor/etc/fstab."，"/system/etc/fstab."，"/first_stage_ramdisk/system/etc/fstab."，"/fstab."，"/first_stage_ramdisk/fstab.";
+
