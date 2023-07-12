@@ -576,7 +576,7 @@ void SelinuxSetupKernelLogging() {
 - 一行代码调用，实现也很简单，只有3行，就是声明了一个selinux的日志回调函数，然后使用selinux_set_callback进行注册；
 - 这个selinux_set_callback定义在external/selinux/libselinux/src/callbacks.c文件中，从这个目录名可以看到，专门有一套selinux框架处理selinux相关事项；
 - 注册的SelinuxKlogCallback函数，会根据日志的级别进行不同的处理，如果是SELINUX_AVC级别，调用的是SelinuxAvcLog（通过netlink写audit日志），其他级别日志，这是通过KernelLogger记录日志（通过/proc/kmsg文件记录）；
-#### 加载sepolicy准备
+#### 加载sepolicy
 ```
     LOG(INFO) << "Opening SELinux policy";
     PrepareApexSepolicy();
@@ -652,4 +652,76 @@ void SelinuxSetupKernelLogging() {
 ```
 - 注释很清晰说明了，在进入enforcement模式前，需要restorecon一次上下文；
 - 写/sys/fs/selinux/enforce文件，进入enforcement模式；
+- 重新切换到/system/bin/init的用户态上下文；
+- 设置环境变量，记录selinux生效时间；
+#### 跳转init第二阶段
+```
+    const char* path = "/system/bin/init";
+    const char* args[] = {path, "second_stage", nullptr};
+    execv(path, const_cast<char**>(args));
+```
+- exec执行init进程，传递的参数是second_stage，进入init的second stage；
+- 至此，selinux加载阶段结束，正式进入init第二阶段；
+### init第二阶段
+- 参考main.cpp文件中，有init进程的main函数入口中，根据传入的参数进入不同的启动阶段，在SetupSelinux阶段传递的是second_stage参数，所以会调用SecondStageMain函数，进入init第二阶段；
+- SecondStageMain函数定义在system/core/init/init.cpp文件中，下面就结合代码分析一下init第二阶段流程；
+- 首先与前两个阶段一样，都是安装复位信号处理函数、重定向stdio、日志初始化、设置PATH环境变量等；
+```
+trigger_shutdown = [](const std::string& command) { shutdown_state.TriggerShutdown(command); };
+```
+- 多了一个trigger_shutdown函数指针的赋值，这是一个lambda表达式，意思就是trigger_shutdown接受一个const std::string& command参数，并将command传递调用shutdown_state.TriggerShutdown（command）函数；
+```
+// Init should not crash because of a dependence on any other process, therefore we ignore
+    // SIGPIPE and handle EPIPE at the call site directly.  Note that setting a signal to SIG_IGN
+    // is inherited across exec, but custom signal handlers are not.  Since we do not want to
+    // ignore SIGPIPE for child processes, we set a no-op function for the signal handler instead.
+    {
+        struct sigaction action = {.sa_flags = SA_RESTART};
+        action.sa_handler = [](int) {};
+        sigaction(SIGPIPE, &action, nullptr);
+    }
+```
+- 单独给SIGPIPE信号安装了处理函数，而这个处理函数就是啥都不干，应该可以简化为signal(SIGPIPE, SIG_IGN)一行代码；
+```
+    // Set init and its forked children's oom_adj.
+    if (auto result =
+                WriteFile("/proc/1/oom_score_adj", StringPrintf("%d", DEFAULT_OOM_SCORE_ADJUST));
+        !result.ok()) {
+        LOG(ERROR) << "Unable to write " << DEFAULT_OOM_SCORE_ADJUST
+                   << " to /proc/1/oom_score_adj: " << result.error();
+    }
+```
+- 设置init进程的oom_score_adj为-1000，这已经是oom_score_adj的最小值了，那么init进程就永远不会被oom killer误杀了；
+```
+// Set up a session keyring that all processes will have access to. It
+    // will hold things like FBE encryption keys. No process should override
+    // its session keyring.
+    keyctl_get_keyring_ID(KEY_SPEC_SESSION_KEYRING, 1);
+```
+- 关于秘钥，我也不懂，只知道这是一个session key；
+```
+    // Indicate that booting is in progress to background fw loaders, etc.
+    close(open("/dev/.booting", O_WRONLY | O_CREAT | O_CLOEXEC, 0000));
+```
+- 作用是创建/dev/.booting文件，类似于一个标记，其他的background fw loaders看到有这个文件，就知道正在启动过程中；
+```
+    // See if need to load debug props to allow adb root, when the device is unlocked.
+    const char* force_debuggable_env = getenv("INIT_FORCE_DEBUGGABLE");
+    bool load_debug_prop = false;
+    if (force_debuggable_env && AvbHandle::IsDeviceUnlocked()) {
+        load_debug_prop = "true"s == force_debuggable_env;
+    }
+    unsetenv("INIT_FORCE_DEBUGGABLE");
+
+    // Umount the debug ramdisk so property service doesn't read .prop files from there, when it
+    // is not meant to.
+    if (!load_debug_prop) {
+        UmountDebugRamdisk();
+    }
+```
+- 注释也说的很清楚了，主要是在设备unlocked的时候，是否允许adb root；
+- 获取环境变量INIT_FORCE_DEBUGGABLE；
+- 判断设备是否已经解锁，定义在system/core/fs_mgr/libfs_avb/fs_avb.cpp文件中，具体是否unlocked，分别尝试从dtb、properties以及cmdline中获取；
+- 只有设备处于unlocked状态，并且INIT_FORCE_DEBUGGABLE环境变量为true，才会允许设备adb root；
+- 如果不允许adb root，将/debug_ramdisk节点umount掉；
 - 
