@@ -492,8 +492,164 @@ void MountMissingSystemPartitions() {
 ```
 - 两个Fstab类对象，fstab读取默认fstab的配置，而mounts对象从/proc/mounts文件读取系统已经mount的文件系统；
 - fstab对象读取的默认fstab配置，可以参考ReadDefaultFstab，定义在system/core/fs_mgr/fs_mgr_fstab.cpp文件中，大约是读取了如下文件：
-1. 从dt设备树读取；
-2. 从/etc/recovery.fstab文件获取；
-3. 多个位置，格式为${fstab}<fstab_suffix>,${fstab}<hardware>,以及${fstab}<hardware.platform>；
-4. 上述的${fstab}可能包含值："/odm/etc/fstab."，"/vendor/etc/fstab."，"/system/etc/fstab."，"/first_stage_ramdisk/system/etc/fstab."，"/fstab."，"/first_stage_ramdisk/fstab.";
+    - 从dt设备树读取；
+    - 从/etc/recovery.fstab文件获取；
+    - 多个位置，格式为${fstab}<fstab_suffix>,${fstab}<hardware>,以及${fstab}<hardware.platform>；
+    - 上述的${fstab}可能包含值："/odm/etc/fstab."，"/vendor/etc/fstab."，"/system/etc/fstab."，"/first_stage_ramdisk/system/etc/fstab."，"/fstab."，"/first_stage_ramdisk/fstab.";
+```
+    static const std::vector<std::string> kPartitionNames = {"system_ext", "product"};
 
+    android::fs_mgr::Fstab extra_fstab;
+    for (const auto& name : kPartitionNames) {
+        if (GetEntryForMountPoint(&mounts, "/"s + name)) {
+            // The partition is already mounted.
+            continue;
+        }
+
+        auto system_entries = GetEntriesForMountPoint(&fstab, "/system");
+        for (auto& system_entry : system_entries) {
+            if (!system_entry) {
+                LOG(ERROR) << "Could not find mount entry for /system";
+                break;
+            }
+            if (!system_entry->fs_mgr_flags.logical) {
+                LOG(INFO) << "Skipping mount of " << name << ", system is not dynamic.";
+                break;
+            }
+
+            auto entry = *system_entry;
+            auto partition_name = name + fs_mgr_get_slot_suffix();
+            auto replace_name = "system"s + fs_mgr_get_slot_suffix();
+
+            entry.mount_point = "/"s + name;
+            entry.blk_device =
+                android::base::StringReplace(entry.blk_device, replace_name, partition_name, false);
+            if (!fs_mgr_update_logical_partition(&entry)) {
+                LOG(ERROR) << "Could not update logical partition";
+                continue;
+            }
+
+            extra_fstab.emplace_back(std::move(entry));
+        }
+    }
+```
+- 利用/proc/mounts文件获取的mounts对象，检测/system_ext和/product是否已经mount，如果已经mount直接跳出for循环；
+- 如果fstab对象需要mount /system路径的场景下，检查mount点的属性是否逻辑分区，只有逻辑分区才会mount；
+- 根据出来的/system挂载点构造entry对象（包含路径，设备），并加入到extra_fstab中；
+- 可以看到，system_ext和product路劲的挂载情况会影响system路径的挂载行为，关于上面分析的system_ext, system， product，可以参考[共享系统映像](https://source.android.com/docs/core/architecture/partitions/shared-system-image?hl=zh-cn);
+```
+
+    SkipMountingPartitions(&extra_fstab, true /* verbose */);
+    if (extra_fstab.empty()) {
+        return;
+    }
+
+    BlockDevInitializer block_dev_init;
+    for (auto& entry : extra_fstab) {
+        if (access(entry.blk_device.c_str(), F_OK) != 0) {
+            auto block_dev = android::base::Basename(entry.blk_device);
+            if (!block_dev_init.InitDmDevice(block_dev)) {
+                LOG(ERROR) << "Failed to find device-mapper node: " << block_dev;
+                continue;
+            }
+        }
+        if (fs_mgr_do_mount_one(entry)) {
+            LOG(ERROR) << "Could not mount " << entry.mount_point;
+        }
+    }
+}
+```
+- SkipMountingPartitions在system/core/fs_mgr/fs_mgr_fstab.cpp定义，会根据/system/system_ext/etc/init/config/skip_mount.cfg文件的配置，确定是否跳过某些节点的mount，并且将其从extra_fstab中删除；
+- 如果extra_fstab中还有需要mount的节点，首先access检查设备是否可访问，然后将其初始化为dm设备，并调用fs_mgr_do_mount_one完成mount操作；
+#### 初始化日志
+```
+SelinuxSetupKernelLogging();
+```
+而SelinuxSetupKernelLogging实现如下：
+```
+void SelinuxSetupKernelLogging() {
+    selinux_callback cb;
+    cb.func_log = SelinuxKlogCallback;
+    selinux_set_callback(SELINUX_CB_LOG, cb);
+}
+```
+- 一行代码调用，实现也很简单，只有3行，就是声明了一个selinux的日志回调函数，然后使用selinux_set_callback进行注册；
+- 这个selinux_set_callback定义在external/selinux/libselinux/src/callbacks.c文件中，从这个目录名可以看到，专门有一套selinux框架处理selinux相关事项；
+- 注册的SelinuxKlogCallback函数，会根据日志的级别进行不同的处理，如果是SELINUX_AVC级别，调用的是SelinuxAvcLog（通过netlink写audit日志），其他级别日志，这是通过KernelLogger记录日志（通过/proc/kmsg文件记录）；
+#### 加载sepolicy准备
+```
+    LOG(INFO) << "Opening SELinux policy";
+    PrepareApexSepolicy();
+```
+- 我们都知道，selinux要起作用，必须依赖policy，而且不同的policy，赋予了selinux不同的行为，所以selinux本身是机制，而policy是实现管理的策略；
+- PrepareApexSepolicy函数在加载policy前做一些前期的准备工作，以及init加载policy的具体事项可以参考注释，写的很清晰；
+```
+// Updatable sepolicy is shipped within an zip within an APEX. Because
+// it needs to be available before Apexes are mounted, apexd copies
+// the zip from the APEX and stores it in /metadata/sepolicy. If there is
+// no updatable sepolicy in /metadata/sepolicy, then the updatable policy is
+// loaded from /system/etc/selinux/apex. Init performs the following
+// steps on boot:
+//
+// 1. Validates the zip by checking its signature against a public key that is
+// stored in /system/etc/selinux.
+// 2. Extracts files from zip and stores them in /dev/selinux.
+// 3. Checks if the apex_sepolicy.sha256 matches the sha256 of precompiled_sepolicy.
+// if so, the precompiled sepolicy is used. Otherwise, an on-device compile of the policy
+// is used. This is the same flow as on-device compilation of policy for Treble.
+// 4. Cleans up files in /dev/selinux which are no longer needed.
+// 5. Restorecons the remaining files in /dev/selinux.
+// 6. Sets selinux into enforcing mode and continues normal booting.
+//
+```
+- 而PrepareApexSepolicy函数，就是完成上述的1和2步骤，即校验zip文件并将文件解压到/dev/selinux;
+```
+    // Read the policy before potentially killing snapuserd.
+    std::string policy;
+    ReadPolicy(&policy);
+    CleanupApexSepolicy();
+
+    auto snapuserd_helper = SnapuserdSelinuxHelper::CreateIfNeeded();
+    if (snapuserd_helper) {
+        // Kill the old snapused to avoid audit messages. After this we cannot
+        // read from /system (or other dynamic partitions) until we call
+        // FinishTransition().
+        snapuserd_helper->StartTransition();
+    }
+
+    LoadSelinuxPolicy(policy);
+
+    if (snapuserd_helper) {
+        // Before enforcing, finish the pending snapuserd transition.
+        snapuserd_helper->FinishTransition();
+        snapuserd_helper = nullptr;
+    }
+```
+- ReadPolicy函数从/dev/selinux中将策略文件读入到policy这个字符串变量中；
+- CleanupApexSepolicy函数删掉/dev/selinux文件，即将解压的policy删除；
+- LoadSelinuxPolicy函数将读取出来的写入到/sys/fs/selinux/load，从而实现真正的policy加载；
+- 需要注意的是，/sys/fs/selinux目录需要挂载成selinuxfs，否则是没有load文件存在的；
+- 这中间掺杂了snapuserd_helper->StartTransition()和snapuserd_helper->FinishTransition()，相当于一个上下文的保护，具体为何要保护，后续分析snapuserd的时候再分析；
+```
+// This restorecon is intentionally done before SelinuxSetEnforcement because the permissions
+    // needed to transition files from tmpfs to *_contexts_file context should not be granted to
+    // any process after selinux is set into enforcing mode.
+    if (selinux_android_restorecon("/dev/selinux/", SELINUX_ANDROID_RESTORECON_RECURSE) == -1) {
+        PLOG(FATAL) << "restorecon failed of /dev/selinux failed";
+    }
+
+    SelinuxSetEnforcement();
+
+    // We're in the kernel domain and want to transition to the init domain.  File systems that
+    // store SELabels in their xattrs, such as ext4 do not need an explicit restorecon here,
+    // but other file systems do.  In particular, this is needed for ramdisks such as the
+    // recovery image for A/B devices.
+    if (selinux_android_restorecon("/system/bin/init", 0) == -1) {
+        PLOG(FATAL) << "restorecon failed of /system/bin/init failed";
+    }
+
+    setenv(kEnvSelinuxStartedAt, std::to_string(start_time.time_since_epoch().count()).c_str(), 1);
+```
+- 注释很清晰说明了，在进入enforcement模式前，需要restorecon一次上下文；
+- 写/sys/fs/selinux/enforce文件，进入enforcement模式；
+- 
