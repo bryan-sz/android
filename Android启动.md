@@ -424,4 +424,73 @@ const char* path = "/system/bin/init";
 ```
 - 调用execve函数fork一个子进程，子进程执行/system/bin/init二进制，也就是第二阶段的init；
 - 传递给init的参数包含selinux_setup，也就是可以猜测，android是默认强制启动了selinux的；
-至此，第一阶段init初始化完成，后续分析第二阶段的init；
+至此，第一阶段init初始化完成，后续分析下一阶段的init；
+### selinux启动
+参考main.cpp文件中，有init进程的main函数入口中，根据传入的参数进入不同的启动阶段，在第一阶段init传递的是selinux_setup参数，所以会调用SetupSelinux来启动selinux；
+SetupSelinux定义在system/core/init/selinux.cpp文件中，下面就针对SetupSelinux来拆解selinux启动过程；
+#### SetupSelinux注释
+- 在SetupSelinux函数前有一段注释，将Selinux启动过程注意事项和流程讲解的很清楚，可以参考；
+```
+// The SELinux setup process is carefully orchestrated around snapuserd. Policy
+// must be loaded off dynamic partitions, and during an OTA, those partitions
+// cannot be read without snapuserd. But, with kernel-privileged snapuserd
+// running, loading the policy will immediately trigger audits.
+//
+// We use a five-step process to address this:
+//  (1) Read the policy into a string, with snapuserd running.
+//  (2) Rewrite the snapshot device-mapper tables, to generate new dm-user
+//      devices and to flush I/O.
+//  (3) Kill snapuserd, which no longer has any dm-user devices to attach to.
+//  (4) Load the sepolicy and issue critical restorecons in /dev, carefully
+//      avoiding anything that would read from /system.
+//  (5) Re-launch snapuserd and attach it to the dm-user devices from step (2).
+//
+// After this sequence, it is safe to enable enforcing mode and continue booting.
+```
+- 在这里感叹一句，这个注释生动的说明了什么样的注释才是一个好的注释，不是简单说明要怎么做，而是说明为什么要这么做；
+- 注释里面提到的sapuserd，看名字应该是一个daemon进程，但是不知道具体功能是啥，也没有注意到在第一阶段什么时候启动的snapuserd，回头再补充；
+- snapuserd和dm-user的详细功能，可以参考[虚拟A/B概述](https://source.android.google.cn/devices/tech/ota/virtual_ab?hl=zh-cn#dm-user)；
+#### 复位信号处理
+```
+int SetupSelinux(char** argv) {
+    SetStdioToDevNull(argv);
+    InitKernelLogging(argv);
+
+    if (REBOOT_BOOTLOADER_ON_PANIC) {
+        InstallRebootSignalHandlers();
+    }
+```
+- 和init第一阶段一样，先初始化日志，然后安装复位信号处理函数；
+#### 启动时间戳
+```
+boot_clock::time_point start_time = boot_clock::now();
+```
+- 一行代码，获取当前时间；
+- 其实可以考虑将这个时间戳放到复位信号处理前面，这样是更准确的SetupSelinux函数时间戳；
+#### mount文件系统
+```
+MountMissingSystemPartitions();
+```
+- 一行代码，这个函数同样定义在system/core/init/selinux.cpp文件中，详细分析一下这个函数功能；
+```
+// This is for R system.img/system_ext.img to work on old vendor.img as system_ext.img
+// is introduced in R. We mount system_ext in second stage init because the first-stage
+// init in boot.img won't be updated in the system-only OTA scenario.
+void MountMissingSystemPartitions() {
+```
+- 注释详细解释了是因为Android R的OTA场景而引入的；
+```
+    android::fs_mgr::Fstab fstab;
+    if (!ReadDefaultFstab(&fstab)) {
+        LOG(ERROR) << "Could not read default fstab";
+    }
+
+    android::fs_mgr::Fstab mounts;
+    if (!ReadFstabFromFile("/proc/mounts", &mounts)) {
+        LOG(ERROR) << "Could not read /proc/mounts";
+    }
+```
+- 两个Fstab类对象，fstab读取默认fstab的配置，而mounts对象从/proc/mounts文件读取系统已经mount的文件系统；
+- fstab对象读取的默认fstab配置，可以参考ReadDefaultFstab，定义在system/core/fs_mgr/fs_mgr_fstab.cpp文件中，大约是读取了如下文件：
+-- 从dt设备树读取；
+--  
