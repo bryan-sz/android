@@ -764,3 +764,43 @@ void PropertyInit() {
 - 创建/dev/__properties__目录；
 - CreateSerializedPropertyInfo()函数尝试从selinux的哥哥配置文件中读取selinux的配置，并写入到/dev/__properties__/property_info文件，最终restorecon生效；
 - __system_property_area_init()就是创建一片共享内存，映射/dev/__properties__/property_info文件；
+- property_info_area.LoadDefaultPath()函数就是映射了/dev/__properties__/property_info文件；
+- 三个process前缀的函数，分别从dtb、cmdline以及bootconfig中获取property；
+- ExportKernelBootProps()函数将上述process获取的property export出来；
+- PropertyLoadBootDefaults()函数又从一些配置文件中获取了一些property；
+#### umount
+```
+    // Umount second stage resources after property service has read the .prop files.
+    UmountSecondStageRes();
+
+    // Umount the debug ramdisk after property service has read the .prop files when it means to.
+    if (load_debug_prop) {
+        UmountDebugRamdisk();
+    }
+```
+- 注释写的很清楚，上一步的property初始化完成后，就可以将相应的挂载点umount了；
+
+#### mount
+```
+static void MountExtraFilesystems() {
+#define CHECKCALL(x) \
+    if ((x) != 0) PLOG(FATAL) << #x " failed.";
+
+    // /apex is used to mount APEXes
+    CHECKCALL(mount("tmpfs", "/apex", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
+                    "mode=0755,uid=0,gid=0"));
+
+    // /linkerconfig is used to keep generated linker configuration
+    CHECKCALL(mount("tmpfs", "/linkerconfig", "tmpfs", MS_NOEXEC | MS_NOSUID | MS_NODEV,
+                    "mode=0755,uid=0,gid=0"));
+#undef CHECKCALL
+}
+```
+- 这部分代码很简单，就是把/apex和/linerconfig挂载成tmpfs；
+#### selinux
+```
+    // Now set up SELinux for second stage.
+    SelabelInitialize();
+    SelinuxRestoreContext();
+```
+- selinux的初始化，和启动流程没有太多关系，加上selinux里面东西太多，暂时先不管；
