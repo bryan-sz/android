@@ -834,7 +834,7 @@ static void MountExtraFilesystems() {
 ```
 - 记录secondStage的启动时间；
 - 将INIT_AVB_VERSION环境变量设置到"ro.boot.avb_version"属性后，删除INIT_AVB_VERSION变量；看注释是说OTA使用，具体怎么使用以后再拓展；
-#### 
+#### property设置
 ```
     fs_mgr_vendor_overlay_mount_all();
     export_oem_lock_status();
@@ -842,4 +842,169 @@ static void MountExtraFilesystems() {
     SetUsbController();
     SetKernelVersion();
 ```
-- 
+- fs_mgr_vendor_overlay_mount_all()函数首先获取vndk的属性，然后"/system/vendor_overlay/"和 "/product/vendor_overlay/"加上vndk属性作为overlayfs挂载；
+- export_oem_lock_status()函数首先获取"ro.oem_unlock_supported"属性，然后根据"ro.boot.verifiedbootstate" property是否为orange设置"ro.boot.flash.locked"，关于oem unlock，可以参考[锁定和解锁引导家在程序](https://source.android.com/docs/core/architecture/bootloader/locking_unlocking?hl=zh-cn)
+- SetUsbController()函数通过扫描/sys/class/udc目录下的子目录，设置"sys.usb.controller"这个属性；
+- SetKernelVersion()函数通过uname获取内核版本号，设置到"ro.kernel.version"这个property；
+#### 内置函数
+```
+    const BuiltinFunctionMap& function_map = GetBuiltinFunctionMap();
+    Action::set_function_map(&function_map);
+```
+- 设置的这个内置函数，看起来就是一些shell的命令，应该是提供了shell内置命令的功能；
+#### mount namespace
+- 只能从代码看到有很多mount动作和namespace的建立，虽然注释很多，但还是没有搞懂为什么要做这个事情；
+- 要详细了解为什么要做这个事情，需要了解各个目录和对应的进程，才能更加深刻理解这些mount namespace；
+#### selinux上下文
+```
+    void InitializeSubcontext() {
+    if (IsMicrodroid()) {
+        LOG(INFO) << "Not using subcontext for microdroid";
+        return;
+    }
+
+    if (SelinuxGetVendorAndroidVersion() >= __ANDROID_API_P__) {
+        subcontext.reset(
+                new Subcontext(std::vector<std::string>{"/vendor", "/odm"}, kVendorContext));
+    }
+}
+```
+- 如果是Microdroid，就不适用selinux的上下文，关于Microdroid，参考[Microdroid](https://source.android.com/docs/core/virtualization/microdroid?hl=zh-cn);
+- 剩下的就是__ANDROID_API_P__的版本，建立selinux的上下文；
+#### 解析启动脚本
+```
+    ActionManager& am = ActionManager::GetInstance();
+    ServiceList& sm = ServiceList::GetInstance();
+
+    LoadBootScripts(am, sm);
+```
+- 都知道init进程会解析很多.rc启动脚本，并且执行里面的动作，终于在这个阶段开始执行了；
+- 从LoadBootScripts函数传参来看，启动脚本里面应该有action和service两种类型的动作；
+- 如果“ro.boot.init_rc” property指定了启动脚本，那么就从制定的路径去加载.rc脚本；
+- 否则，系统默认一些.rc脚本路径，详细可以参考LoadBootScripts实现；
+- 但是这个函数看起来只是parse了启动脚本，并没有执行.rc脚本里面的动作;
+#### GSI设置
+```
+ // Make the GSI status available before scripts start running.
+    auto is_running = android::gsi::IsGsiRunning() ? "1" : "0";
+    SetProperty(gsi::kGsiBootedProp, is_running);
+    auto is_installed = android::gsi::IsGsiInstalled() ? "1" : "0";
+    SetProperty(gsi::kGsiInstalledProp, is_installed);
+    if (android::gsi::IsGsiRunning()) {
+        std::string dsu_slot;
+        if (android::gsi::GetActiveDsu(&dsu_slot)) {
+            SetProperty(gsi::kDsuSlotProp, dsu_slot);
+        }
+    }
+```
+- 注释已经说了，在.rc脚本运行前需要先保证GSI status可用；
+- 关于GSI，可以参考[通用系统映像](https://developer.android.com/topic/generic-system-image?hl=zh-cn);
+- 设置gsi的property；
+- 从"/metadata/gsi/dsu/active"文件获取dsu状态，并设置property；
+- 关于dsu，可以参考[动态系统更新](https://developer.android.com/topic/dsu?hl=zh-cn)；
+- 至于为什么gsi要在.rc运行前可用，猜测是.rc脚本里面的action或者service可能会用到这两个property；
+#### early-init
+```
+    am.QueueBuiltinAction(SetupCgroupsAction, "SetupCgroups");
+    am.QueueBuiltinAction(SetKptrRestrictAction, "SetKptrRestrict");
+    am.QueueBuiltinAction(TestPerfEventSelinuxAction, "TestPerfEventSelinux");
+    am.QueueBuiltinAction(ConnectEarlyStageSnapuserdAction, "ConnectEarlyStageSnapuserd");
+    am.QueueEventTrigger("early-init");
+```
+- 首先是cgroup，重点是从/etc/cgroups.json文件mount cgroup挂载点和生成/dev/cgroup_info/cgroup.rc；
+- SetKptrRestrictAction函数主要是设置/proc/sys/kernel/kptr_restrict接口，控制用户态是否可以查看内核态符号地址；
+- TestPerfEventSelinuxAction函数注释说了，测试内核是否为perf_event_open安装了Selinux的hook，如果存在设置sys.init.perf_lsm_hooks这个property；
+- ConnectEarlyStageSnapuserdAction主要是测试snapuserd和snapuserd_proxy这两个早期service是否存在；
+-  am.QueueEventTrigger("early-init")将以上几个加入queue的action标记为是early-init阶段；
+#### init 
+```
+    // Queue an action that waits for coldboot done so we know ueventd has set up all of /dev...
+    am.QueueBuiltinAction(wait_for_coldboot_done_action, "wait_for_coldboot_done");
+    // ... so that we can start queuing up actions that require stuff from /dev.
+    am.QueueBuiltinAction(SetMmapRndBitsAction, "SetMmapRndBits");
+    Keychords keychords;
+    am.QueueBuiltinAction(
+            [&epoll, &keychords](const BuiltinArguments& args) -> Result<void> {
+                for (const auto& svc : ServiceList::GetInstance()) {
+                    keychords.Register(svc->keycodes());
+                }
+                keychords.Start(&epoll, HandleKeychord);
+                return {};
+            },
+            "KeychordInit");
+
+    // Trigger all the boot actions to get us started.
+    am.QueueEventTrigger("init");
+```
+- 同early-init阶段一样，将wait_for_coldboot_done_action和"KeychordInit"对应的lambda加入queue，并标记为init阶段；
+#### late-init
+```
+    // Don't mount filesystems or start core system services in charger mode.
+    std::string bootmode = GetProperty("ro.bootmode", "");
+    if (bootmode == "charger") {
+        am.QueueEventTrigger("charger");
+    } else {
+        am.QueueEventTrigger("late-init");
+    }
+```
+- 根据"ro.bootmode" property获取当前是否在充电，并标记是charger还是late-init阶段；
+#### main loop
+```
+    // Run all property triggers based on current state of the properties.
+    am.QueueBuiltinAction(queue_property_triggers_action, "queue_property_triggers");
+
+    // Restore prio before main loop
+    setpriority(PRIO_PROCESS, 0, 0);
+    while (true) {
+        // By default, sleep until something happens. Do not convert far_future into
+        // std::chrono::milliseconds because that would trigger an overflow. The unit of boot_clock
+        // is 1ns.
+        const boot_clock::time_point far_future = boot_clock::time_point::max();
+        boot_clock::time_point next_action_time = far_future;
+
+        auto shutdown_command = shutdown_state.CheckShutdown();
+        if (shutdown_command) {
+            LOG(INFO) << "Got shutdown_command '" << *shutdown_command
+                      << "' Calling HandlePowerctlMessage()";
+            HandlePowerctlMessage(*shutdown_command);
+        }
+
+        if (!(prop_waiter_state.MightBeWaiting() || Service::is_exec_service_running())) {
+            am.ExecuteOneCommand();
+            // If there's more work to do, wake up again immediately.
+            if (am.HasMoreCommands()) {
+                next_action_time = boot_clock::now();
+            }
+        }
+        // Since the above code examined pending actions, no new actions must be
+        // queued by the code between this line and the Epoll::Wait() call below
+        // without calling WakeMainInitThread().
+        if (!IsShuttingDown()) {
+            auto next_process_action_time = HandleProcessActions();
+
+            // If there's a process that needs restarting, wake up in time for that.
+            if (next_process_action_time) {
+                next_action_time = std::min(next_action_time, *next_process_action_time);
+            }
+        }
+
+        std::optional<std::chrono::milliseconds> epoll_timeout;
+        if (next_action_time != far_future) {
+            epoll_timeout = std::chrono::ceil<std::chrono::milliseconds>(
+                    std::max(next_action_time - boot_clock::now(), 0ns));
+        }
+        auto epoll_result = epoll.Wait(epoll_timeout);
+        if (!epoll_result.ok()) {
+            LOG(ERROR) << epoll_result.error();
+        }
+        if (!IsShuttingDown()) {
+            HandleControlMessages();
+            SetUsbController();
+        }
+    }
+```
+- 这是一个死循环，正常init进程就在这个循环里面处理后续的事项了；
+- 将进程优先级恢复到默认的0，CFS的默认优先级别；
+- 探测当前是否被标记shutdown阶段，如果是的话，去处理复位相关事情；
+- 使用ActionManager机制执行队列中的第一个action或者service，关于ActionManager机制留到后面再看；
+- 至此，各种service启动，SecondStage阶段就相当于结束了；
