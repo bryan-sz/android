@@ -804,3 +804,42 @@ static void MountExtraFilesystems() {
     SelinuxRestoreContext();
 ```
 - selinux的初始化，和启动流程没有太多关系，加上selinux里面东西太多，暂时先不管；
+#### 开启propertyService
+```
+    Epoll epoll;
+    if (auto result = epoll.Open(); !result.ok()) {
+        PLOG(FATAL) << result.error();
+    }
+
+    // We always reap children before responding to the other pending functions. This is to
+    // prevent a race where other daemons see that a service has exited and ask init to
+    // start it again via ctl.start before init has reaped it.
+    epoll.SetFirstCallback(ReapAnyOutstandingChildren);
+
+    InstallSignalFdHandler(&epoll);
+    InstallInitNotifier(&epoll);
+    StartPropertyService(&property_fd);
+```
+- StartPropertyService开启了一个新线程PropertyServiceThread，线程里使用了上面创建的epoll，然后和init进程进行socket通信；
+#### 启动时间戳和环境变量
+```
+    // Make the time that init stages started available for bootstat to log.
+    RecordStageBoottimes(start_time);
+
+    // Set libavb version for Framework-only OTA match in Treble build.
+    if (const char* avb_version = getenv("INIT_AVB_VERSION"); avb_version != nullptr) {
+        SetProperty("ro.boot.avb_version", avb_version);
+    }
+    unsetenv("INIT_AVB_VERSION");
+```
+- 记录secondStage的启动时间；
+- 将INIT_AVB_VERSION环境变量设置到"ro.boot.avb_version"属性后，删除INIT_AVB_VERSION变量；看注释是说OTA使用，具体怎么使用以后再拓展；
+#### 
+```
+    fs_mgr_vendor_overlay_mount_all();
+    export_oem_lock_status();
+    MountHandler mount_handler(&epoll);
+    SetUsbController();
+    SetKernelVersion();
+```
+- 
