@@ -50,28 +50,9 @@ int main(int argc, char** argv) {
     }
 ```
 service启动的时候没有传递参数，所以argc是1，argv是NULL，直接跳转到uevent的main函数，即ueventd_main函数；
-### ueventd_main
-- ueventd_main函数定义在system/core/init/ueventd.cpp文件中，就是ueventd的主要文件了；
-- ueventd_main函数代码行数不多，只有不到70行，下面就针对进行代码解读；
-```
-int ueventd_main(int argc, char** argv) {
-    /*
-     * init sets the umask to 077 for forked processes. We need to
-     * create files with exact permissions, without modification by
-     * the umask.
-     */
-    umask(000);
-
-    android::base::InitLogging(argv, &android::base::KernelLogger);
-
-    LOG(INFO) << "ueventd started!";
-
-    SelinuxSetupKernelLogging();
-    SelabelInitialize();
-```
-- 这一部分代码和init进程的FirstStageMain及SecondStageMain类似，都是进行初始化，包括umask，日志以及selinux标签；
-- 下面的这一部分代码，就要解析uevent.rc配置文件，并正式接收uevent事件进行处理，不过在这之前，我们需要先熟悉几个数据结构；
-#### struct Uevent
+## 相关数据结构
+- 在开始ueventd_main函数之前，我们先熟悉几个ueventd进程相关的数据结构，对于我们理解ueventd_main函数会更有帮助；
+### struct Uevent
 - 定义在system/core/init/uevent.h头文件中，表示的是uevent事件：
 ```
 struct Uevent {
@@ -87,7 +68,7 @@ struct Uevent {
     int minor;
 };
 ```
-#### class UeventHandler
+### class UeventHandler
 - 定义在system/core/init/uevent_handler.h头文件中，是对uevent事件处理的抽象；
 ```
 class UeventHandler {
@@ -100,7 +81,7 @@ class UeventHandler {
 };
 ```
 - 重点是HandleUevent函数，接收一个Uevent事件，并进行处理，这是一个虚函数，需要具体的Handler进行实现；
-#### class DeviceHandler
+### class DeviceHandler
 - 定义在system/core/init/devices.h文件中，继承了UeventHandler类；
 ```
 class DeviceHandler : public UeventHandler {
@@ -144,7 +125,7 @@ class DeviceHandler : public UeventHandler {
 };
 ```
 - 类成员比较多，用到的时候再做解读；
-#### class FirmwareHandler
+### class FirmwareHandler
 - 定义在system/core/init/firmware_handler.h头文件中，也继承了UeventHandler，是对Firmware事件的具体实现；
 ```
 class FirmwareHandler : public UeventHandler {
@@ -169,7 +150,7 @@ class FirmwareHandler : public UeventHandler {
     std::vector<ExternalFirmwareHandler> external_firmware_handlers_;
 };
 ```
-#### class ModaliasHandler
+### class ModaliasHandler
 - 定义在system/core/init/modalias_handler.h头文件中，也继承了UeventHandler类，是对modalias事件的处理抽象；
 ```
 class ModaliasHandler : public UeventHandler {
@@ -184,7 +165,7 @@ class ModaliasHandler : public UeventHandler {
 };
 ```
 - 至此，可以看到UeventHandler的处理，包含了DeviceHandler、FirmwareHandler、ModaliasHandler共三类；
-#### struct UeventdConfiguration
+### struct UeventdConfiguration
 - 定义在system/core/init/ueventd_parser.h头文件中，是对ueventd中配置相关的抽象；
 ```
 struct UeventdConfiguration {
@@ -200,7 +181,7 @@ struct UeventdConfiguration {
 };
 ```
 - 主要是在对ueventd.rc配置文件的解析中会用到，表示相关的各项配置，大体与上面的UeventHandler的子类对应，可以分为device、firmware以及modalias相关配置，以及其他相关配置；
-#### class UeventListener
+### class UeventListener
 - 定义在system/core/init/uevent_listener.h文件中，是对uevent时间进行监听的抽象；
 ```
 class UeventListener {
@@ -221,7 +202,7 @@ class UeventListener {
 };
 ```
 - 从UeventListener的类方法来看，除了poll监听事件外，另外一大功能就是重新生成uevent事件；
-#### class ColdBoot
+### class ColdBoot
 - 定义在system/core/init/ueventd.cpp文件中，主要是ueventd进程在系统coldboot状态时相关处理的抽象；
 ```
 class ColdBoot {
@@ -261,5 +242,26 @@ class ColdBoot {
     std::vector<std::string> parallel_restorecon_queue_;
 };
 ```
-- 至此，ueventd重点的数据结构都了解的差不多了，就可以开始进入ueventd的最重要的功能了；
-#### 
+- 至此，ueventd重点的数据结构都了解的差不多了，就可以开始进入ueventd的最重要的功能了； 
+
+## ueventd_main
+- ueventd_main函数定义在system/core/init/ueventd.cpp文件中，就是ueventd的主要文件了；
+- ueventd_main函数代码行数不多，只有不到70行，下面就针对进行代码解读；
+```
+int ueventd_main(int argc, char** argv) {
+    /*
+     * init sets the umask to 077 for forked processes. We need to
+     * create files with exact permissions, without modification by
+     * the umask.
+     */
+    umask(000);
+
+    android::base::InitLogging(argv, &android::base::KernelLogger);
+
+    LOG(INFO) << "ueventd started!";
+
+    SelinuxSetupKernelLogging();
+    SelabelInitialize();
+```
+- 这一部分代码和init进程的FirstStageMain及SecondStageMain类似，都是进行初始化，包括umask，日志以及selinux标签；
+- 下面的这一部分代码，就要解析uevent.rc配置文件，并正式接收uevent事件进行处理；
