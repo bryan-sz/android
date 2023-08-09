@@ -1,5 +1,11 @@
 # Android启动(三)-ueventd
 - 在上一篇文章[Android启动（二）- init.rc解析](https://github.com/bryan-sz/android/blob/main/Android%E5%90%AF%E5%8A%A8%EF%BC%88%E4%BA%8C%EF%BC%89-%20init.rc%E8%A7%A3%E6%9E%90.md)中提到，early-init阶段首先启动的就是ueventd；后续其他的进程，也按照这个init.rc文件的解析顺序来分析；
+## 待补充
+- 目前只是第一版，将整体流程分析了一遍，具体细节还要再补充；
+- 对ueventd.rc的解析过程分析；
+- 对coldboot的具体处理过程分析；
+- 对各个uevent类的handler分析；
+- uevent_listerner.Poll函数分析；
 ## ueventd是什么
 - ueventd进程是AOSP中为了处理kernel的uevent事件而引入的一个daemon进程；当ueventd接收到这样的消息时，它通过采取适当的操作来处理它，这些操作通常可以是在/dev中创建设备节点、设置文件权限、设置selinux标签等。 
 Ueventd还可以处理内核请求的固件加载，并为块和字符设备创建符号链接。
