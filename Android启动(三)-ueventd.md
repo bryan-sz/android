@@ -247,6 +247,7 @@ class ColdBoot {
 ## ueventd_main
 - ueventd_main函数定义在system/core/init/ueventd.cpp文件中，就是ueventd的主要文件了；
 - ueventd_main函数代码行数不多，只有不到70行，下面就针对进行代码解读；
+### 进程设置
 ```
 int ueventd_main(int argc, char** argv) {
     /*
@@ -265,3 +266,66 @@ int ueventd_main(int argc, char** argv) {
 ```
 - 这一部分代码和init进程的FirstStageMain及SecondStageMain类似，都是进行初始化，包括umask，日志以及selinux标签；
 - 下面的这一部分代码，就要解析uevent.rc配置文件，并正式接收uevent事件进行处理；
+### 解析ueventd.rc
+```
+    std::vector<std::unique_ptr<UeventHandler>> uevent_handlers;
+
+    auto ueventd_configuration = GetConfiguration();
+
+    uevent_handlers.emplace_back(std::make_unique<DeviceHandler>(
+            std::move(ueventd_configuration.dev_permissions),
+            std::move(ueventd_configuration.sysfs_permissions),
+            std::move(ueventd_configuration.subsystems), android::fs_mgr::GetBootDevices(), true));
+    uevent_handlers.emplace_back(std::make_unique<FirmwareHandler>(
+            std::move(ueventd_configuration.firmware_directories),
+            std::move(ueventd_configuration.external_firmware_handlers)));
+
+    if (ueventd_configuration.enable_modalias_handling) {
+        std::vector<std::string> base_paths = {"/odm/lib/modules", "/vendor/lib/modules"};
+        uevent_handlers.emplace_back(std::make_unique<ModaliasHandler>(base_paths));
+    }
+```
+- 首先是声明uevent_handlers这个vector，用于在后面解析ueventd.rc文件时，将相关需要监听的事件插入vector中；
+- GetConfiguration解析ueventd.rc文件，并将相关的DeviceHandler、FirmwareHandler、ModaliasHandler对象插入uevent_handlers这个vector中；
+### netlink设置
+```
+ UeventListener uevent_listener(ueventd_configuration.uevent_socket_rcvbuf_size);
+```
+- 这个是uevent用到netlink，所以需要进行socket buf大小设置；
+### coldboot处理
+```
+    if (!android::base::GetBoolProperty(kColdBootDoneProp, false)) {
+        ColdBoot cold_boot(uevent_listener, uevent_handlers,
+                           ueventd_configuration.enable_parallel_restorecon,
+                           ueventd_configuration.parallel_restorecon_dirs);
+        cold_boot.Run();
+    }
+
+    for (auto& uevent_handler : uevent_handlers) {
+        uevent_handler->ColdbootDone();
+    }
+```
+- 这段代码首先通过"ro.cold_boot_done"这个property来判断系统当前是否还处于coldboot阶段；
+- 如果还处于coldboot阶段，就会调用cold_boot.Run()方法完成coldboot阶段相关事项；
+- 如果coldboot已经完成，那么就检查uevent_handlers这个vector中的DeviceHandler、FirmwareHandler、ModaliasHandler是否有coldboot相关的任务，并调用相关handler的ColdbootDone()方法进行处理；
+###  
+```
+    // We use waitpid() in ColdBoot, so we can't ignore SIGCHLD until now.
+    signal(SIGCHLD, SIG_IGN);
+    // Reap and pending children that exited between the last call to waitpid() and setting SIG_IGN
+    // for SIGCHLD above.
+    while (waitpid(-1, nullptr, WNOHANG) > 0) {
+    }
+
+    // Restore prio before main loop
+    setpriority(PRIO_PROCESS, 0, 0);
+    uevent_listener.Poll([&uevent_handlers](const Uevent& uevent) {
+        for (auto& uevent_handler : uevent_handlers) {
+            uevent_handler->HandleUevent(uevent);
+        }
+        return ListenerAction::kContinue;
+    });
+
+    return 0;
+}
+```
