@@ -328,4 +328,8 @@ int ueventd_main(int argc, char** argv) {
 
     return 0;
 }
+- 首先是设置信号处理函数，将子进程退出设置为IGN；
+- 然后设置进程优先级为CFS调度类的正常级别；
+- Poll后面括号中的是lambda表达式，作为传递给Poll函数的callback调用，即监听到事件时调用相应的handler处理相应的事件；
+- 注意Poll是死循环，所以ueventd进程不会退出；
 ```
