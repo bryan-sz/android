@@ -86,6 +86,7 @@ do { \
 #endif
 ```
 - 很简单的实现，就是将thread_info的preempt.count成员+1，表明禁止抢占；
+- 另外，如果没有CONFIG_PREEMPT_COUNT,也会有barrier，注释也说明了是在抢占临界区中避免get_user/put_user等引起fault和调度迁移的场景；
 ## __schedule
 - __schedule函数也定义在kernel/sched/core.c文件中，是调度的核心；
 ```
