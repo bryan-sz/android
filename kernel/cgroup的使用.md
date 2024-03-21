@@ -17,4 +17,4 @@ none on /dev/stune type cgroup (rw,nosuid,nodev,noexec,relatime,schedtune)
 
 
 
-- 参考文档：(Android中关于cpu/cpuset/schedtune的应用)[https://www.cnblogs.com/arnoldlu/p/6221608.html]
+- 参考文档：[Android中关于cpu/cpuset/schedtune的应用](https://www.cnblogs.com/arnoldlu/p/6221608.html)
