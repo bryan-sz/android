@@ -112,7 +112,7 @@ static Result<void> SetupCgroupsAction(const BuiltinArguments&) {
 - 首先检查系统cgroup功能是否可用，CgroupsAvailable函数就是直接访问/proc/cgroups文件，确定kernel是否提供了cgroups功能；
 - 创建/dev/cgroup_info/目录，从注释可以看到，是为了设置合理的sepolicy；
 - 最重要的是，调用CgroupSetup真正的初始化cgroup了；
-## SetupCgroupsAction
-SetupCgroupsAction函数位于system/core/libprocessgroup/setup/cgroup_map_write.cpp文件中，注意，已经不是在init.cpp文件了，是专门的libprocessgroup目录。
+## CgroupSetup
+CgroupSetup函数位于system/core/libprocessgroup/setup/cgroup_map_write.cpp文件中，注意，已经不是在init.cpp文件了，是专门的libprocessgroup目录。
 
 - 参考文档：[Android中关于cpu/cpuset/schedtune的应用](https://www.cnblogs.com/arnoldlu/p/6221608.html)
