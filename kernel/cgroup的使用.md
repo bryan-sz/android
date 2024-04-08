@@ -114,5 +114,113 @@ static Result<void> SetupCgroupsAction(const BuiltinArguments&) {
 - 最重要的是，调用CgroupSetup真正的初始化cgroup了；
 ## CgroupSetup
 CgroupSetup函数位于system/core/libprocessgroup/setup/cgroup_map_write.cpp文件中，注意，已经不是在init.cpp文件了，是专门的libprocessgroup目录。
+- 首先第一个数据结构来了，class CgroupDescriptor;
+  ```
+  class CgroupDescriptor {
+  public:
+    CgroupDescriptor(uint32_t version, const std::string& name, const std::string& path,
+                     mode_t mode, const std::string& uid, const std::string& gid, uint32_t flags);
 
+    const format::CgroupController* controller() const { return &controller_; }
+    mode_t mode() const { return mode_; }
+    std::string uid() const { return uid_; }
+    std::string gid() const { return gid_; }
+
+    void set_mounted(bool mounted);
+
+  private:
+    format::CgroupController controller_;
+    mode_t mode_ = 0;
+    std::string uid_;
+    std::string gid_;
+};
+  ```
+- 很简单，4个成员，一个cgroupController，一个mode，一个uid，一个gid；
+- 第二个数据结构来了，struct cgroupController，看起来也很简单。
+```
+struct CgroupController {
+  public:
+    CgroupController();
+    CgroupController(uint32_t version, uint32_t flags, const std::string& name,
+                     const std::string& path);
+
+    uint32_t version() const;
+    uint32_t flags() const;
+    const char* name() const;
+    const char* path() const;
+
+    void set_flags(uint32_t flags);
+
+  private:
+    static constexpr size_t CGROUP_NAME_BUF_SZ = 16;
+    static constexpr size_t CGROUP_PATH_BUF_SZ = 32;
+
+    uint32_t version_;
+    uint32_t flags_;
+    char name_[CGROUP_NAME_BUF_SZ];
+    char path_[CGROUP_PATH_BUF_SZ];
+};
+```
+然后就是CgroupSetup的实现。
+```
+```
+bool CgroupSetup() {
+    using namespace android::cgrouprc;
+
+    std::map<std::string, CgroupDescriptor> descriptors;
+
+    // 只有init进程才能进行cgroup的初始化
+    if (getpid() != 1) {
+        LOG(ERROR) << "Cgroup setup can be done only by init process";
+        return false;
+    }
+
+    // Make sure we do this only one time. No need for std::call_once because
+    // init is a single-threaded process
+    /*  /dev/cgroup_info/cgroup.rc文件是一个临时文件，表示cgroup已经初始化过，通过检测标志文件是否存在的方式来表示cgroup是否已经初始化过 */
+    if (access(CGROUPS_RC_PATH, F_OK) == 0) {
+        LOG(WARNING) << "Attempt to call CgroupSetup() more than once";
+        return true;
+    }
+
+    // load cgroups.json file
+    if (!ReadDescriptors(&descriptors)) {
+        LOG(ERROR) << "Failed to load cgroup description file";
+        return false;
+    }
+
+    // setup cgroups
+    for (auto& [name, descriptor] : descriptors) {
+        if (SetupCgroup(descriptor)) {
+            descriptor.set_mounted(true);
+        } else {
+            // issue a warning and proceed with the next cgroup
+            LOG(WARNING) << "Failed to setup " << name << " cgroup";
+        }
+    }
+
+    // mkdir <CGROUPS_RC_DIR> 0711 system system
+    if (!Mkdir(android::base::Dirname(CGROUPS_RC_PATH), 0711, "system", "system")) {
+        LOG(ERROR) << "Failed to create directory for " << CGROUPS_RC_PATH << " file";
+        return false;
+    }
+
+    // Generate <CGROUPS_RC_FILE> file which can be directly mmapped into
+    // process memory. This optimizes performance, memory usage
+    // and limits infrormation shared with unprivileged processes
+    // to the minimum subset of information from cgroups.json
+    if (!WriteRcFile(descriptors)) {
+        LOG(ERROR) << "Failed to write " << CGROUPS_RC_PATH << " file";
+        return false;
+    }
+
+    // chmod 0644 <CGROUPS_RC_PATH>
+    if (fchmodat(AT_FDCWD, CGROUPS_RC_PATH, 0644, AT_SYMLINK_NOFOLLOW) < 0) {
+        PLOG(ERROR) << "fchmodat() failed";
+        return false;
+    }
+
+    return true;
+}
+```
 - 参考文档：[Android中关于cpu/cpuset/schedtune的应用](https://www.cnblogs.com/arnoldlu/p/6221608.html)
