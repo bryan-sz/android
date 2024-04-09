@@ -223,4 +223,11 @@ bool CgroupSetup() {
     return true;
 }
 ```
+- ReadDescriptors函数就是从json配置文件中读取内容，构建CgroupDescriptor对象；
+- 首先从/etc/cgroups.json文件读取cgroup的配置，如果出错直接返回；
+- 从ro.product.first_api_level属性中获取当前api级别，并尝试从/etc/task_profiles/cgroups_${api_level}.json文件获取cgroup配置，并添加到CgroupDescriptor对象；
+- 最后尝试从/vendor/etc/cgroups.json文件中获取vendor关于cgroup的额外配置，并添加到CgroupDescriptor对象；
+
+- SetupCgroup函数就是调用mount系统调用，将从cgroups.json文件中获取的信息，包含cgroup版本号，cgroup子系统（controller），uid，gid，mount点等信息作为mount参数，进行cgroup文件系统mount操作。
+- 再将相关信息写到/dev/cgroup_info/cgroup.rc文件，作为系统已经mount过cgroup的标识，根据注释，还有另外一个作用就是和其他进程关于cgroups信息的共享；
 - 参考文档：[Android中关于cpu/cpuset/schedtune的应用](https://www.cnblogs.com/arnoldlu/p/6221608.html)
