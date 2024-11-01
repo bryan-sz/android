@@ -107,7 +107,7 @@ graph LR
 el0t_64_error_handler(el0t_64_error_handler) --> __el0_error_handler_common(__el0_error_handler_common)
 el0t_32_error_handler(el0t_32_error_handler) --> __el0_error_handler_common(__el0_error_handler_common)
 ```
-同样，el0t_64_error_handler与el0t_32_error_handler也都是asmlinkage关键词修饰，说明用于汇编代码调用，但是目前还没有搜索到直接调用的地方。
+同样，el0t_64_error_handler与el0t_32_error_handler也都是asmlinkage关键词修饰，说明用于汇编代码调用，其实这个就是异常向量表中分别对应32位用户态程序和64位用户态程序中的error异常的向量表入口。
 
 ### 场景总结
 根据上面的函数调用总结
