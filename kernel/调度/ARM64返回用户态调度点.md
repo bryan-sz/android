@@ -108,3 +108,29 @@ el0t_64_error_handler(el0t_64_error_handler) --> __el0_error_handler_common(__el
 el0t_32_error_handler(el0t_32_error_handler) --> __el0_error_handler_common(__el0_error_handler_common)
 ```
 同样，el0t_64_error_handler与el0t_32_error_handler也都是asmlinkage关键词修饰，说明用于汇编代码调用，但是目前还没有搜索到直接调用的地方。
+
+### 场景总结
+根据上面的函数调用总结
+|函数|场景|
+|-|-|
+|el0_da|el0(用户态)下面产生的data abort|
+|asm_exit_to_user_mode|给汇编代码调用，用于汇编代码中返回用户态，当前用于fork进程后返回|
+|el0_ia|el0(用户态)下面产生的instruction abort|
+|el0_fpsimd_acc|el0(用户态)下面产生的SIMD指令异常|
+|el0_sve_acc|el0(用户态)下面产生的SVE(scalable vector extension)指令异常|
+|el0_sme_acc|el0(用户态)下面产生的SVE(scalable matrix extension)指令异常|
+|el0_fpsimd_exc|el0(用户态)下面产生的浮点指令异常|
+|el0_sys|el0(用户态)下面产生的系统指令异常|
+|el0_pc|el0(用户态)下面产生的PC指针非对齐异常|
+|el0_sp|el0(用户态)下面产生的SP指针非对齐异常|
+|el0_undef|el0(用户态)下面产生的未定义指令异常|
+|el0_bti|el0(用户态)下面产生的分支指令(branch target instruction)目标地址异常|
+|el0_mops|el0(用户态)下面产生的SError|
+|el0_dbg|el0(用户态)下面产生的watchpoint/breakpoint等调试异常|
+|el0_svc|el0(用户态)下面产生的svc指令异常，也就是系统调用|
+|el0_fpac|FEAT_FPAC实现后，el0(用户态)下面产生的指针验证指令异常|
+|el0_interrupt|el0(用户态)下面产生的中断|
+|__el0_error_handler_common|el0(用户态)下面产生的error异常，在异常向量表中的error|
+|el0_cp15|el0(用户态)下面产生的协处理器cp15访问异常|
+|el0_svc_compat|el0(用户态)下面32位用户态应用程序的svc系统调用兼容|
+|el0_inv|el0(用户态)下面产生未定义异常，所有不在上面的都走这个分支处理|
