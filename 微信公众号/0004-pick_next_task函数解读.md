@@ -149,9 +149,9 @@ restart:
 如果是快速路径，核心调用链计划位直接调用CFS调度类的实现：
 - pick_next_task
   - __pick_next_task
-  - scx_enabled
-  - pick_next_task_fair (CFS调度类的pick_next_task实现)
-  - pick_task_idle (IDLE调度类的pick_next_task实现)
+    - scx_enabled
+    - pick_next_task_fair (CFS调度类的pick_next_task实现)
+    - pick_task_idle (IDLE调度类的pick_next_task实现)
 
 ## 总结
 - pick_next_task是调度器的核心函数，主要是挑选出下一个运行的最高优先级的任务
